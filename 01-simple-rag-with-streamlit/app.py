@@ -12,7 +12,6 @@ import streamlit as st
 from anthropic import Anthropic, NOT_GIVEN as ANTHROPIC_NOT_GIVEN
 from anthropic.types import ModelParam as AnthropicChatModel
 from dotenv import load_dotenv
-from openai import api_key
 from openai.types import ChatModel as OpenAIChatModel
 from typing_extensions import Optional
 
@@ -377,8 +376,8 @@ if __name__ == "__main__":
         db_path="./sample-taxlaw-1000.sqlite3",
         table_name="taxlaw_documents",
         embedding_model="text-embedding-3-large",
-        # chat_model="claude-3-7-sonnet-latest",
-        chat_model="gpt-4o",
+        chat_model="claude-3-7-sonnet-latest",
+        # chat_model="gpt-4o",
         system_prompt=loaded_system_prompt,
         # .env 파일에서 로드된 환경변수 사용
         openai_api_key=os.getenv("OPENAI_API_KEY"),

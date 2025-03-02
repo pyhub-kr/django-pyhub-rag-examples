@@ -9,7 +9,10 @@ from typing import Generator, List, Literal, TypeAlias, Union
 import openai
 import sqlite_vec
 import streamlit as st
+from anthropic import Anthropic, NOT_GIVEN as ANTHROPIC_NOT_GIVEN
+from anthropic.types import ModelParam as AnthropicChatModel
 from dotenv import load_dotenv
+from openai import api_key
 from openai.types import ChatModel as OpenAIChatModel
 from typing_extensions import Optional
 
@@ -21,7 +24,7 @@ OpenAIEmbeddingModel: TypeAlias = Union[
     str,
 ]
 
-LLMChatModel: TypeAlias = Union[str, OpenAIChatModel]
+LLMChatModel: TypeAlias = Union[str, OpenAIChatModel, AnthropicChatModel]
 
 
 # https://platform.openai.com/docs/pricing#embeddings
@@ -38,16 +41,20 @@ def get_embedding_price(
     return usd, krw
 
 
-# https://platform.openai.com/docs/pricing#latest-models
 def get_chat_price(
     model: LLMChatModel, input_tokens: int, output_tokens: int
 ) -> tuple[Decimal, Decimal]:
     input_price_per_1m, output_price_per_1m = {
+        # https://platform.openai.com/docs/pricing#latest-models
         "gpt-4o": (Decimal("2.5"), Decimal("10.0")),
         "gpt-4o-mini": (Decimal("0.15"), Decimal("0.60")),
         "o1": (Decimal("15"), Decimal("60.00")),
         "o3-mini": (Decimal("1.10"), Decimal("4.40")),
         "o1-mini": (Decimal("1.10"), Decimal("4.40")),
+        # https://www.anthropic.com/pricing#anthropic-api
+        "claude-3-7-sonnet-latest": (Decimal("3"), Decimal("15")),
+        "claude-3-5-haiku-latest": (Decimal("0.80"), Decimal("4")),
+        "claude-3-opus-latest": (Decimal("15"), Decimal("75")),
     }[model]
 
     input_usd = (Decimal(input_tokens) * input_price_per_1m) / Decimal("1000000")
@@ -111,12 +118,16 @@ class Rag:
         embedding_model: OpenAIEmbeddingModel,
         chat_model: LLMChatModel,
         openai_api_key: Optional[str] = None,
+        anthropic_api_key: Optional[str] = None,
+        max_tokens: int = 2000,
     ):
         self.db_path = db_path
         self.table_name = table_name
         self.embedding_model = embedding_model
         self.chat_model = chat_model
         self.openai_api_key = openai_api_key
+        self.anthropic_api_key = anthropic_api_key
+        self.max_tokens = max_tokens
 
     def embed(self, input: str) -> tuple[list[float], int]:
         client = openai.Client(api_key=self.openai_api_key)
@@ -131,6 +142,15 @@ class Rag:
         system_prompt: Optional[str],
         user_prompt: str,
     ) -> Generator[str, None, None]:
+        if "claude" in self.chat_model.lower():
+            return self.make_reply_using_anthropic(system_prompt, user_prompt)
+        return self.make_reply_using_openai(system_prompt, user_prompt)
+
+    def make_reply_using_openai(
+        self,
+        system_prompt: Optional[str],
+        user_prompt: str,
+    ) -> Generator[str, None, None]:
         text_output = ""
 
         messages = []
@@ -138,11 +158,13 @@ class Rag:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": user_prompt})
 
-        response = openai.chat.completions.create(
+        client = openai.Client(api_key=self.openai_api_key)
+        response = client.chat.completions.create(
             model=self.chat_model,
             messages=messages,
             stream=True,
             stream_options={"include_usage": True},
+            max_tokens=self.max_tokens,
         )
         # 생성 결과를 실시간 스트리밍하면서 누적 처리
         usage = None
@@ -157,6 +179,54 @@ class Rag:
         if usage:
             input_tokens = usage.prompt_tokens
             output_tokens = usage.completion_tokens
+            usd, krw = get_chat_price(self.chat_model, input_tokens, output_tokens)
+            text_output += f"\n\n(입력 토큰: {input_tokens}, 출력 토큰: {output_tokens}, 비용: ${usd}, ₩{krw})"
+            yield text_output
+
+    def make_reply_using_anthropic(
+        self,
+        system_prompt: Optional[str],
+        user_prompt: str,
+    ) -> Generator[str, None, None]:
+        text_output = ""
+
+        messages = [
+            {"role": "user", "content": user_prompt},
+        ]
+
+        client = Anthropic(api_key=self.anthropic_api_key)
+        response = client.messages.create(
+            model=self.chat_model,
+            system=system_prompt or ANTHROPIC_NOT_GIVEN,
+            messages=messages,
+            max_tokens=self.max_tokens,
+            stream=True,
+        )
+
+        input_tokens = 0
+        output_tokens = 0
+
+        for chunk in response:
+            if hasattr(chunk, "delta") and hasattr(chunk.delta, "text"):
+                text_output += chunk.delta.text
+            elif hasattr(chunk, "type") and chunk.type == "content_block_delta":
+                if hasattr(chunk, "delta") and hasattr(chunk.delta, "text"):
+                    text_output += chunk.delta.text
+                elif hasattr(chunk, "content_block") and hasattr(
+                    chunk.content_block, "text"
+                ):
+                    text_output += chunk.content_block.text
+            yield text_output
+
+            if hasattr(chunk, "message") and hasattr(chunk.message, "usage"):
+                input_tokens += getattr(chunk.message.usage, "input_tokens", 0)
+                output_tokens += getattr(chunk.message.usage, "output_tokens", 0)
+
+            if hasattr(chunk, "usage") and chunk.usage:
+                input_tokens += getattr(chunk.usage, "input_tokens", 0)
+                output_tokens += getattr(chunk.usage, "output_tokens", 0)
+
+        if input_tokens or output_tokens:
             usd, krw = get_chat_price(self.chat_model, input_tokens, output_tokens)
             text_output += f"\n\n(입력 토큰: {input_tokens}, 출력 토큰: {output_tokens}, 비용: ${usd}, ₩{krw})"
             yield text_output
@@ -202,6 +272,8 @@ def main(
     chat_model: LLMChatModel,
     system_prompt: str,
     openai_api_key: Optional[str] = None,
+    anthropic_api_key: Optional[str] = None,
+    max_tokens: int = 2000,
 ):
     rag = Rag(
         db_path=db_path,
@@ -209,6 +281,8 @@ def main(
         embedding_model=embedding_model,
         chat_model=chat_model,
         openai_api_key=openai_api_key,
+        anthropic_api_key=anthropic_api_key,
+        max_tokens=max_tokens,
     )
 
     default_query = (
@@ -303,8 +377,11 @@ if __name__ == "__main__":
         db_path="./sample-taxlaw-1000.sqlite3",
         table_name="taxlaw_documents",
         embedding_model="text-embedding-3-large",
+        # chat_model="claude-3-7-sonnet-latest",
         chat_model="gpt-4o",
         system_prompt=loaded_system_prompt,
         # .env 파일에서 로드된 환경변수 사용
         openai_api_key=os.getenv("OPENAI_API_KEY"),
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+        max_tokens=2000,
     )

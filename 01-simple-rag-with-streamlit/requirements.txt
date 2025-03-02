@@ -2,3 +2,4 @@ python-dotenv
 streamlit
 sqlite-vec
 openai
+anthropic

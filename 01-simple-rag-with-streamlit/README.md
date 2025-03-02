@@ -9,7 +9,10 @@ SQLite 데이터베이스에 저장된 세법 해석례 문서를 검색할 수 
 
 ## 스크린샷
 
-![](./assets/screenshot.png)
+각 문서는 OpenAI `text-embedding-3-large` 임베딩 모델로 3072차원으로 임베딩했으며,
+LLM 응답은 `claude-3-7-sonnet-latest` 모델을 사용했습니다.
+
+![](./assets/screen-anthropic.gif)
 
 ## 데이터베이스
 
@@ -52,24 +55,32 @@ pip install -r requirements.txt
 3. OpenAI API 키 설정 (필수):
 
 임베딩을 위해 [OpenAI API 키가 필요](https://platform.openai.com/api-keys)합니다.
-
 문서에 대한 임베딩은 미리 생성되어있으며, 질문에 대한 임베딩 만을 실시간으로 생성할 것이기에 요금은 미미할 것입니다.
+
+그리고 LLM 응답 생성을 위해 [Anthropic API 키](https://console.anthropic.com/settings/keys)가 필요합니다.
+LLM 응답 생성에서 Anthropic API를 사용하지 않고 OpenAI API를 사용 하실려면
+``chat_model="claude-3-7-sonnet-latest"`` 설정을 ``gpt-4o`` 등으로 변경해주세요.
+그럼 Anthropic API 키는 필요 없습니다.
 
 ```
 # Linux/Mac
 export OPENAI_API_KEY="your-api-key-here"
+export ANTHROPIC_API_KEY="your-api-key-here"
 
 # Windows (CMD)
 set OPENAI_API_KEY=your-api-key-here
+set ANTHROPIC_API_KEY=your-api-key-here
 
 # Windows (PowerShell)
 $env:OPENAI_API_KEY="your-api-key-here"
+$env:ANTHROPIC_API_KEY="your-api-key-here"
 ```
 
 혹은 `.env.sample` 파일을 복사해서 `.env` 파일을 생성하고 다음 내용을 추가하세요:
 
 ```
 OPENAI_API_KEY=your-api-key-here
+ANTHROPIC_API_KEY=your-api-key-here
 ```
 
 4. Streamlit 앱 실행:

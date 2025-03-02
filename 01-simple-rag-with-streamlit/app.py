@@ -4,12 +4,13 @@ import sqlite3
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import List, Literal, TypeAlias, Union
+from typing import Generator, List, Literal, TypeAlias, Union
 
 import openai
 import sqlite_vec
 import streamlit as st
 from dotenv import load_dotenv
+from openai.types import ChatModel as OpenAIChatModel
 from typing_extensions import Optional
 
 OpenAIEmbeddingModel: TypeAlias = Union[
@@ -20,9 +21,13 @@ OpenAIEmbeddingModel: TypeAlias = Union[
     str,
 ]
 
+LLMChatModel: TypeAlias = Union[str, OpenAIChatModel]
+
 
 # https://platform.openai.com/docs/pricing#embeddings
-def get_price(model: OpenAIEmbeddingModel, tokens: int) -> tuple[Decimal, Decimal]:
+def get_embedding_price(
+    model: OpenAIEmbeddingModel, tokens: int
+) -> tuple[Decimal, Decimal]:
     # 2025년 3월 기준
     price_per_1m = {
         "text-embedding-3-small": Decimal("0.02"),
@@ -30,6 +35,29 @@ def get_price(model: OpenAIEmbeddingModel, tokens: int) -> tuple[Decimal, Decima
     }[model]
     usd = (Decimal(tokens) * price_per_1m) / Decimal("1000000")
     krw = usd * Decimal("1500")
+    return usd, krw
+
+
+# https://platform.openai.com/docs/pricing#latest-models
+def get_chat_price(
+    model: LLMChatModel, input_tokens: int, output_tokens: int
+) -> tuple[Decimal, Decimal]:
+    input_price_per_1m, output_price_per_1m = {
+        "gpt-4o": (Decimal("2.5"), Decimal("10.0")),
+        "gpt-4o-mini": (Decimal("0.15"), Decimal("0.60")),
+        "o1": (Decimal("15"), Decimal("60.00")),
+        "o3-mini": (Decimal("1.10"), Decimal("4.40")),
+        "o1-mini": (Decimal("1.10"), Decimal("4.40")),
+    }[model]
+
+    input_usd = (Decimal(input_tokens) * input_price_per_1m) / Decimal("1000000")
+    output_usd = (Decimal(output_tokens) * output_price_per_1m) / Decimal("1000000")
+    usd = input_usd + output_usd
+
+    input_krw = input_usd * Decimal("1500")
+    output_krw = output_usd * Decimal("1500")
+    krw = input_krw + output_krw
+
     return usd, krw
 
 
@@ -81,11 +109,13 @@ class Rag:
         db_path: str,
         table_name: str,
         embedding_model: OpenAIEmbeddingModel,
+        chat_model: LLMChatModel,
         openai_api_key: Optional[str] = None,
     ):
         self.db_path = db_path
         self.table_name = table_name
         self.embedding_model = embedding_model
+        self.chat_model = chat_model
         self.openai_api_key = openai_api_key
 
     def embed(self, input: str) -> tuple[list[float], int]:
@@ -95,6 +125,41 @@ class Rag:
             model=self.embedding_model,
         )
         return response.data[0].embedding, response.usage.prompt_tokens
+
+    def make_reply(
+        self,
+        system_prompt: Optional[str],
+        user_prompt: str,
+    ) -> Generator[str, None, None]:
+        text_output = ""
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": user_prompt})
+
+        response = openai.chat.completions.create(
+            model=self.chat_model,
+            messages=messages,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+        # 생성 결과를 실시간 스트리밍하면서 누적 처리
+        usage = None
+        for chunk in response:
+            if chunk.choices and chunk.choices[0].delta.content:
+                text_output += chunk.choices[0].delta.content
+                yield text_output
+
+            if chunk.usage:
+                usage = chunk.usage
+
+        if usage:
+            input_tokens = usage.prompt_tokens
+            output_tokens = usage.completion_tokens
+            usd, krw = get_chat_price(self.chat_model, input_tokens, output_tokens)
+            text_output += f"\n\n(입력 토큰: {input_tokens}, 출력 토큰: {output_tokens}, 비용: ${usd}, ₩{krw})"
+            yield text_output
 
     def similarity_search(
         self, embedding_vector: list[float], k: int = 4
@@ -134,12 +199,15 @@ def main(
     db_path: Union[Path, str],
     table_name: str,
     embedding_model: OpenAIEmbeddingModel,
+    chat_model: LLMChatModel,
+    system_prompt: str,
     openai_api_key: Optional[str] = None,
 ):
     rag = Rag(
         db_path=db_path,
         table_name=table_name,
         embedding_model=embedding_model,
+        chat_model=chat_model,
         openai_api_key=openai_api_key,
     )
 
@@ -159,9 +227,11 @@ def main(
         if not search_query:
             search_query = default_query
 
-        with st.spinner("유사 문서 찾는 중 ..."):
+        st.markdown(f"### 유사 문서")
+
+        with st.spinner("찾는 중 ..."):
             embedding_vector, tokens = rag.embed(search_query)
-            usd_price, krw_price = get_price(rag.embedding_model, tokens)
+            usd_price, krw_price = get_embedding_price(rag.embedding_model, tokens)
             doc_list = rag.similarity_search(embedding_vector)
 
         st.markdown(
@@ -194,6 +264,20 @@ def main(
         else:
             st.info("No documents found matching your search criteria.")
 
+        st.markdown(f"### LLM 응답 (모델: {rag.chat_model})")
+
+        with st.spinner("LLM 응답 생성 중 ..."):
+            # 응답을 표시할 빈 markdown 컴포넌트 생성
+            response_container = st.empty()
+
+            # 스트리밍 응답 처리
+            for current_text in rag.make_reply(
+                system_prompt=system_prompt + "\n\n" + f"<context>{doc_list}</context>",
+                user_prompt=f"Question: {search_query}",
+            ):
+                # 누적된 텍스트로 컴포넌트 업데이트
+                response_container.markdown(current_text)
+
     # Footer
     st.markdown("---")
     st.markdown(
@@ -209,10 +293,18 @@ def main(
 if __name__ == "__main__":
     load_dotenv()
 
+    try:
+        with open("system_prompt.txt", "rt", encoding="utf-8") as f:
+            loaded_system_prompt = f.read()
+    except IOError:
+        loaded_system_prompt = None
+
     main(
         db_path="./sample-taxlaw-1000.sqlite3",
         table_name="taxlaw_documents",
         embedding_model="text-embedding-3-large",
+        chat_model="gpt-4o",
+        system_prompt=loaded_system_prompt,
         # .env 파일에서 로드된 환경변수 사용
         openai_api_key=os.getenv("OPENAI_API_KEY"),
     )

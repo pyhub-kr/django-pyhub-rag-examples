@@ -73,15 +73,7 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("📚 세법 해석례 유사 문서 검색")
-st.markdown(
-    """
-    파이썬사랑방 [장고로 만드는 RAG 웹 채팅 서비스](https://ai.pyhub.kr/hands-on-lab/django-webchat-rag/) 튜토리얼을 통해
-    생성된 sqlite 데이터베이스를 활용한 유사 문서 검색 서비스입니다.
-    (참고: [국세법령정보시스템](https://taxlaw.nts.go.kr/)에는
-    [13만 건이 넘는 세법해석례 질답 데이터](https://taxlaw.nts.go.kr/qt/USEQTJ001M.do)가 있습니다.)
-    """
-)
+st.title("📚 독점규제 및 공정거래에 관한 법률 (약칭: 공정거래법) 검색")
 
 
 @dataclass
@@ -94,19 +86,7 @@ class Document:
     def __post_init__(self):
         """초기화 후 실행되는 메서드로 필요한 속성들을 설정합니다."""
         # page_content에서 필요한 속성들을 파싱하여 할당
-        obj = json.loads(self.page_content)
-        self.문서ID = obj["문서ID"]
-        self.제목 = obj["제목"]
-        self.문서번호 = obj["문서번호"]
-        self.법령분류 = obj["법령분류"]
-        self.요지 = obj["요지"]
-        self.회신 = obj["회신"]
-        self.파일내용 = obj["파일내용"]
-        self.공개여부 = obj["공개여부"]
-        self.문서분류 = obj["문서분류"]
-        self.생성일시 = obj["생성일시"]
-        self.수정일시 = obj["수정일시"]
-        self.url = self.metadata.get("url", None)
+        self.제목 = " ".join(self.page_content.splitlines()[:3]).strip()
 
 
 class Rag:
@@ -285,7 +265,7 @@ def main(
     )
 
     default_query = (
-        "재화 수출하는 경우 영세율 첨부 서류로 수출실적명세서가 없는 경우 해결 방법"
+        "대기업과 중소기업은 공정거래법을 어떻게 준수해야하나요?"
     )
 
     # Search interface
@@ -314,26 +294,8 @@ def main(
         if doc_list:
             for doc in doc_list:
                 with st.expander(f"{doc.제목} (유사도 거리 : {doc.distance:.4f})"):
-                    meta_data = {
-                        "문서ID": doc.문서ID,
-                        "공개여부": doc.공개여부,
-                        "문서분류": doc.문서분류,
-                        "법령분류": doc.법령분류,
-                        "생성일시": doc.생성일시,
-                        "수정일시": doc.수정일시,
-                    }
-
-                    st.markdown("#### 문서 메타데이터")
-                    st.table(meta_data)
-
-                    st.markdown("#### 파일내용")
-                    st.markdown(doc.파일내용)
-
-                    st.markdown("#### 요지")
-                    st.markdown(doc.요지)
-
-                    if doc.url:
-                        st.markdown(f"**[원문 보기]({doc.url})**")
+                    st.markdown(doc.page_content)
+                    st.markdown(doc.metadata)
         else:
             st.info("No documents found matching your search criteria.")
 
@@ -356,7 +318,7 @@ def main(
     st.markdown(
         """
 <div style="text-align: center; color: gray; font-size: 0.8em;">
-만든이 : 파이썬사랑방 <a href="mailto:me@pyhub.kr">me@pyhub.kr</a> , 자문 : 서찬영세무회계사무소
+만든이 : 파이썬사랑방 <a href="mailto:me@pyhub.kr">me@pyhub.kr</a>
 </div>
         """,
         unsafe_allow_html=True,
@@ -373,9 +335,12 @@ if __name__ == "__main__":
         loaded_system_prompt = None
 
     main(
-        db_path="./sample-taxlaw-1000.sqlite3",
-        table_name="taxlaw_documents",
-        embedding_model="text-embedding-3-large",
+        # db_path="./sample-taxlaw-1000.sqlite3",
+        db_path="./fair-sample.sqlite3",
+        # table_name="taxlaw_documents",
+        table_name="documents",
+        # embedding_model="text-embedding-3-large",
+        embedding_model="text-embedding-3-small",
         chat_model="claude-3-7-sonnet-latest",
         # chat_model="gpt-4o",
         system_prompt=loaded_system_prompt,

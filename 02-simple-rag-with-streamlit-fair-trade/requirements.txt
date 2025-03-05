@@ -1,3 +1,4 @@
+django-pyhub-rag
 python-dotenv
 streamlit
 sqlite-vec

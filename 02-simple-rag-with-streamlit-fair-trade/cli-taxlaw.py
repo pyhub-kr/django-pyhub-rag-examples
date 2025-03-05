@@ -49,7 +49,7 @@ if __name__ == "__main__":
     load_dotenv()
 
     try:
-        with open("system_prompt.txt", "rt", encoding="utf-8") as f:
+        with open("system_prompt_taxlaw.txt", "rt", encoding="utf-8") as f:
             loaded_system_prompt = f.read()
     except IOError:
         loaded_system_prompt = None
